@@ -8,8 +8,8 @@
 
 // ---------- CONFIG ----------
 #define MR_HEADER_CLASS  @"KAAppearanceView"
-#define MR_TITLE         @"MRzefv"
-#define MR_SUBTITLE      @"Powered by DELvEK"
+#define MR_TITLE         @"Free Streaming¹"
+#define MR_SUBTITLE      @"Powered by DELvEK.NET"
 #define MR_KEYWORDS      (@[@"search", @"搜索", @"搜尋"])
 #define MR_ICON_SIZE     22.0
 // ----------------------------
