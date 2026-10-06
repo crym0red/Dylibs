@@ -8,8 +8,8 @@
 
 // ---------- CONFIG ----------
 #define MR_HEADER_CLASS  @"KAAppearanceView"
-#define MR_TITLE         @"Free Streaming¹"
-#define MR_SUBTITLE      @"Powered by DELvEK.NET"
+#define MR_TITLE         @"MRzefv"
+#define MR_SUBTITLE      @"Powered by DELvEK"
 #define MR_KEYWORDS      (@[@"search", @"搜索", @"搜尋"])
 #define MR_ICON_SIZE     22.0
 // ----------------------------
@@ -296,8 +296,11 @@ static void MRInstall(int attempt) {
 #pragma mark - Splash (black + remote logo)
 
 #define MR_SPLASH_URL  @"https://delvek.net/img/ZEFvEK.png"
-#define MR_SPLASH_MIN  1.5   // seconds, minimum on screen once image is ready
-#define MR_SPLASH_MAX  4.0   // seconds, hard cap
+#define MR_SPLASH_MIN  2.0   // seconds, minimum on screen once image is ready
+#define MR_SPLASH_MAX  6.0   // seconds, hard cap for our cover window
+#define MR_SPLASH_SWEEP_END 8.0 // keep hiding the app's own splash views this long
+// image box = full screen width, square, centered on black
+#define MR_SPLASH_MODE UIViewContentModeScaleAspectFit
 
 static UIWindow *gSplashWin;
 static UIImageView *gSplashIV;
@@ -326,11 +329,68 @@ static void MRSplashDismiss(void) {
     }];
 }
 
+static BOOL MRSplashNameMatch(id obj) {
+    NSString *l = NSStringFromClass([obj class]).lowercaseString;
+    return [l containsString:@"splash"] || [l containsString:@"launchad"] || [l containsString:@"openscreen"] || [l containsString:@"startup"];
+}
+
+// big, near-square image (the app's own splash artwork) that isn't ours
+static BOOL MRIsSplashImage(UIView *v) {
+    if (![v isKindOfClass:UIImageView.class] || ![(UIImageView *)v image]) return NO;
+    CGFloat sw = UIScreen.mainScreen.bounds.size.width;
+    CGSize sz = [v convertRect:v.bounds toView:nil].size;
+    if (sz.width < sw * 0.85 || sz.height < 1) return NO;
+    CGFloat r = sz.width / sz.height;
+    return r > 0.85 && r < 1.15;
+}
+
+static BOOL MRHideSplashViews(UIView *v, int depth) {
+    if (!v || v.tag == kOverlayTag || v == (UIView *)gSplashWin) return NO;
+    BOOL found = NO;
+    if (v.alpha > 0.01 && !v.hidden && MRIsSplashImage(v)) {
+        v.alpha = 0;
+        UIView *sup = v.superview;
+        if (sup && ![sup isKindOfClass:UIWindow.class] && sup.subviews.count <= 2 && sup.alpha > 0.01) sup.alpha = 0;
+        found = YES;
+    }
+    if (MRSplashNameMatch(v) && v.alpha > 0.01) { v.alpha = 0; found = YES; }
+    if (depth > 0) for (UIView *c in v.subviews) found |= MRHideSplashViews(c, depth - 1);
+    return found;
+}
+
+static BOOL MRScanVC(UIViewController *vc, int depth) {
+    if (!vc || depth < 0) return NO;
+    BOOL found = NO;
+    if (MRSplashNameMatch(vc) && vc.isViewLoaded && vc.view.alpha > 0.01) { vc.view.alpha = 0; found = YES; }
+    for (UIViewController *c in vc.childViewControllers) found |= MRScanVC(c, depth - 1);
+    found |= MRScanVC(vc.presentedViewController, depth - 1);
+    return found;
+}
+
+// hides the app's own splash (by class name), keeps our window above every other window
+static BOOL MRSplashSweep(void) {
+    BOOL found = NO;
+    CGFloat maxL = 0;
+    for (UIScene *sc in UIApplication.sharedApplication.connectedScenes) {
+        if (![sc isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *w in ((UIWindowScene *)sc).windows) {
+            if (w == gSplashWin) continue;
+            if (w.windowLevel > maxL) maxL = w.windowLevel;
+            found |= MRScanVC(w.rootViewController, 6);
+            found |= MRHideSplashViews(w, 4);
+        }
+    }
+    if (gSplashWin && gSplashWin.windowLevel <= maxL) gSplashWin.windowLevel = maxL + 1;
+    return found;
+}
+
 static void MRSplashWatch(void) {
-    if (gSplashDone || !gSplashWin) return;
     CFTimeInterval el = CACurrentMediaTime() - gSplashStart;
-    if (el >= MR_SPLASH_MAX || (gSplashImgReady && el >= MR_SPLASH_MIN)) { MRSplashDismiss(); return; }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MRSplashWatch(); });
+    BOOL fresh = MRSplashSweep();
+    if (!gSplashDone && gSplashWin && (el >= MR_SPLASH_MAX || (gSplashImgReady && el >= MR_SPLASH_MIN && !fresh)))
+        MRSplashDismiss();
+    if (el < MR_SPLASH_SWEEP_END)
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MRSplashWatch(); });
 }
 
 static void MRSplashShow(UIWindowScene *scene) {
@@ -343,13 +403,14 @@ static void MRSplashShow(UIWindowScene *scene) {
     w.rootViewController = vc;
 
     UIImageView *iv = [[UIImageView alloc] init];
-    iv.contentMode = UIViewContentModeScaleAspectFit;
+    iv.contentMode = MR_SPLASH_MODE;
+    iv.clipsToBounds = YES;
     iv.translatesAutoresizingMaskIntoConstraints = NO;
     [vc.view addSubview:iv];
     [NSLayoutConstraint activateConstraints:@[
-        [iv.centerXAnchor constraintEqualToAnchor:vc.view.centerXAnchor],
+        [iv.leadingAnchor constraintEqualToAnchor:vc.view.leadingAnchor],
+        [iv.trailingAnchor constraintEqualToAnchor:vc.view.trailingAnchor],
         [iv.centerYAnchor constraintEqualToAnchor:vc.view.centerYAnchor],
-        [iv.widthAnchor constraintEqualToAnchor:vc.view.widthAnchor multiplier:0.7],
         [iv.heightAnchor constraintEqualToAnchor:iv.widthAnchor],
     ]];
 
