@@ -196,8 +196,12 @@ static void MRSetFrame(UIView *v, CGRect r) {
 
 #pragma mark - Apply
 
+static void MRRetint(UIView *v, int depth);
+
 static void MRApply(UIView *header) {
     if (!header.window) return;
+    MRRetint(header, 4);
+    if (header.superview) MRRetint(header.superview, 2);
 
     UIView *bar = objc_getAssociatedObject(header, kBarKey);
     if (!bar || !bar.superview || !bar.window) {
@@ -296,9 +300,9 @@ static void MRInstall(int attempt) {
 #pragma mark - Splash (black + remote logo)
 
 #define MR_SPLASH_URL  @"https://delvek.net/img/ZEFvEK.png"
-#define MR_SPLASH_MIN  2.0   // seconds, minimum on screen once image is ready
-#define MR_SPLASH_MAX  6.0   // seconds, hard cap for our cover window
-#define MR_SPLASH_SWEEP_END 8.0 // keep hiding the app's own splash views this long
+#define MR_SPLASH_MIN  10.0  // seconds, minimum on screen once image is ready
+#define MR_SPLASH_MAX  10.0  // seconds, hard cap for our cover window
+#define MR_SPLASH_SWEEP_END 12.0// keep hiding the app's own splash views this long
 // image box = full screen width, square, centered on black
 #define MR_SPLASH_MODE UIViewContentModeScaleAspectFit
 
@@ -396,7 +400,7 @@ static void MRSplashWatch(void) {
 static void MRSplashShow(UIWindowScene *scene) {
     UIWindow *w = scene ? [[UIWindow alloc] initWithWindowScene:scene]
                         : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    w.windowLevel = UIWindowLevelAlert + 1000;
+    w.windowLevel = 1e9;
     w.backgroundColor = UIColor.blackColor;
     UIViewController *vc = [UIViewController new];
     vc.view.backgroundColor = UIColor.blackColor;
@@ -443,8 +447,71 @@ static void MRSplashFetch(void) {
     }] resume];
 }
 
+#pragma mark - Early cover: show our window the moment the app's first window appears
+
+static void MRHook(Class c, SEL sel, IMP imp, IMP *orig) {
+    Method m = class_getInstanceMethod(c, sel);
+    if (!m) return;
+    IMP o = method_getImplementation(m);
+    if (!class_addMethod(c, sel, imp, method_getTypeEncoding(m))) method_setImplementation(m, imp);
+    *orig = o;
+}
+
+static BOOL gShowing;
+static void MRSplashEarly(UIWindow *w) {
+    if (gSplashDone || gSplashWin || gShowing || w == gSplashWin) return;
+    if (!w.windowScene || w.windowLevel > UIWindowLevelNormal + 0.5) return;
+    gShowing = YES;
+    MRSplashShow(w.windowScene);
+    gShowing = NO;
+}
+
+static void (*orig_mkv)(id, SEL);
+static void hook_mkv(UIWindow *self, SEL _cmd) {
+    orig_mkv(self, _cmd);
+    MRSplashEarly(self);
+}
+
+static void (*orig_sethidden)(id, SEL, BOOL);
+static void hook_sethidden(UIWindow *self, SEL _cmd, BOOL h) {
+    orig_sethidden(self, _cmd, h);
+    if (!h) MRSplashEarly(self);
+}
+
+#pragma mark - Orange header (teal -> orange)
+
+#define MR_ORANGE [UIColor colorWithRed:1.0 green:0.48 blue:0.0 alpha:1.0]
+
+static BOOL MRIsHeaderBG(UIImage *img) {
+    if (!img || img.renderingMode == UIImageRenderingModeAlwaysTemplate) return NO;
+    if (fabs(img.size.width - 375) > 1 || img.size.height > 200) return NO;
+    return [img.description containsString:@"KayakTime_boards"];
+}
+
+static void (*orig_setimage)(id, SEL, UIImage *);
+static void hook_setimage(UIImageView *self, SEL _cmd, UIImage *img) {
+    if (MRIsHeaderBG(img)) {
+        orig_setimage(self, _cmd, [img imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate]);
+        self.tintColor = MR_ORANGE;
+        return;
+    }
+    orig_setimage(self, _cmd, img);
+}
+
+static void MRRetint(UIView *v, int depth) {
+    if (v.tag == kOverlayTag) return;
+    if ([v isKindOfClass:UIImageView.class]) {
+        UIImageView *iv = (UIImageView *)v;
+        if (MRIsHeaderBG(iv.image)) iv.image = iv.image; // routes through hook
+    }
+    if (depth > 0) for (UIView *c in v.subviews) MRRetint(c, depth - 1);
+}
+
 __attribute__((constructor))
 static void MRInit(void) {
+    MRHook(UIWindow.class, @selector(makeKeyAndVisible), (IMP)hook_mkv, (IMP *)&orig_mkv);
+    MRHook(UIWindow.class, @selector(setHidden:), (IMP)hook_sethidden, (IMP *)&orig_sethidden);
+    MRHook(UIImageView.class, @selector(setImage:), (IMP)hook_setimage, (IMP *)&orig_setimage);
     dispatch_async(dispatch_get_main_queue(), ^{
         MRSplashPoll(0);
         MRSplashFetch();
